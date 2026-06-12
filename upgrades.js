@@ -1,14 +1,19 @@
 // Upgrades, coins and altar utilities
 let playerMoney = 0;
 let upgrades = {
-    more_money: 0, // max 2
-    shield: 0, // max 1
-    coin_radar: 0 // max 1
+    more_money: 0,      // max 2
+    shield: 0,          // max 1
+    coin_radar: 0,      // max 1
+    coin_magnet: 0,     // max 5
+    more_speed: 0,      // max 3
+    extra_hp: 0,        // max 5 (NEW)
+    curse_choices: 0,   // max 2 (NEW)
+    greater_choices: 0  // max 1 (NEW)
 };
 let activeAltar = null;
-let lastPurificationLevel = -999;
 
 function addCoins(n) {
+    // Allows positive or negative values (debt)
     playerMoney += n;
     updateMoneyUI();
 }
@@ -16,89 +21,243 @@ function addCoins(n) {
 function updateMoneyUI() {
     const el = document.getElementById('moneyDisplay');
     if (!el) return;
-    el.textContent = `${playerMoney} 🪙`;
+    if (playerMoney < 0) {
+        el.textContent = `${playerMoney} 🪙 (DEBT)`;
+        el.style.color = "#ef4444";
+    } else {
+        el.textContent = `${playerMoney} 🪙`;
+        el.style.color = "#fbbf24";
+    }
 }
 
 function awardCoinsForWin(lvl) {
-    // base reward scales slowly with level
-    let reward = Math.max(1, Math.floor(lvl / 3));
+    let baseReward = Math.max(1, Math.floor(lvl / 3));
+    
+    // Apply 3x multiplier if Purgatory Altar was activated this level
+    if (activeAltar && activeAltar.type === 'purgatory' && activeAltar.interacted) {
+        baseReward *= 3;
+    }
+
+    // Apply +15% from Greed's Toll Curse
+    if (typeof activeCurses !== 'undefined' && activeCurses.curse_greed_toll) {
+        baseReward = Math.floor(baseReward * 1.15);
+    }
+
     try {
-        if (activeCurses.medal_goldrush) reward += 2;
-        if (activeCurses.medal_barrage) reward += 1;
-        if (activeCurses.medal_frenzy) reward += 1;
+        if (activeCurses.medal_goldrush) baseReward += 2;
+        if (activeCurses.medal_barrage) baseReward += 1;
+        if (activeCurses.medal_frenzy) baseReward += 1;
     } catch (e) {}
-    addCoins(reward);
-    spawnFloatingText(0, 0, `+${reward} 🪙 (WIN)`, '#f59e0b');
+
+    addCoins(baseReward);
+    if (typeof spawnFloatingText === 'function') {
+        spawnFloatingText(400, 400, `+${baseReward} 🪙`, '#f59e0b');
+    }
 }
 
-function showUpgradeModal(targetLvl) {
+function showUpgradeModal(targetLvl, next) {
     const modal = document.getElementById('choiceModal');
     const title = document.getElementById('modalTitle');
     const sub = document.getElementById('modalSub');
     const container = document.getElementById('choiceContainer');
 
-    title.textContent = `LEVEL ${targetLvl}: SHOP`;
-    sub.textContent = `Choose one upgrade to buy (one-time).`;
-    container.innerHTML = '';
+    if (title) title.textContent = `LEVEL ${targetLvl}: SHOP`;
+    if (sub) sub.textContent = `Purchase as many upgrades as you want. Click 'CONTINUE' when finished.`;
 
-    const choices = [];
-    if (upgrades.more_money < 2 && playerMoney >= 6) choices.push({id: 'more_money', name: 'BANKED INTERFACE', desc: 'Gain +25% coin gains. (Max 2)', cost: 6});
-    if (upgrades.shield < 1 && playerMoney >= 8) choices.push({id: 'shield', name: 'ENERGY SHIELD', desc: 'Gain one-time shield that blocks 1 damage.', cost: 8});
-    if (upgrades.coin_radar < 1 && playerMoney >= 5) choices.push({id: 'coin_radar', name: 'COIN RADAR', desc: 'Reveal coin hints on HUD and minimap.', cost: 5});
+    function renderShopChoices() {
+        if (!container) return;
+        container.innerHTML = '';
 
-    if (choices.length === 0) {
-        container.innerHTML = '<div class="text-xs text-slate-400 italic">No upgrades available</div>';
-        modal.classList.remove('hidden');
-        return;
+        // Upgrades pricing config (including exponential multipliers)
+        const costMoreMoney = 15 + (upgrades.more_money || 0) * 10;
+        const costShield = 20;
+        const costCoinRadar = 12;
+        const costCoinMagnet = 10 + (upgrades.coin_magnet || 0) * 6;
+        const costMoreSpeed = 15 + (upgrades.more_speed || 0) * 10;
+        
+        // New requested scaling upgrades
+        const costExtraHp = 75 * Math.pow(2, (upgrades.extra_hp || 0)); // 75 -> 150 -> 300 -> 600 -> 1200
+        const costCurseChoices = 100;
+        const costGreaterChoices = 150;
+
+        const choices = [];
+        
+        if ((upgrades.more_money || 0) < 2) {
+            choices.push({id: 'more_money', name: 'BANKED INTERFACE', desc: `Gain +25% coin gains. (${upgrades.more_money}/2)`, cost: costMoreMoney});
+        }
+        if ((upgrades.shield || 0) < 1) {
+            choices.push({id: 'shield', name: 'ENERGY SHIELD', desc: 'Blocks 1 hit of damage. Rebuyable if lost.', cost: costShield});
+        }
+        if ((upgrades.coin_radar || 0) < 1) {
+            choices.push({id: 'coin_radar', name: 'COIN RADAR', desc: 'Reveal hidden coin indicators on the HUD compass.', cost: costCoinRadar});
+        }
+        if ((upgrades.coin_magnet || 0) < 5) {
+            choices.push({id: 'coin_magnet', name: 'COIN MAGNET', desc: `Increase vacuum pickup reach. (${upgrades.coin_magnet}/5)`, cost: costCoinMagnet});
+        }
+        if ((upgrades.more_speed || 0) < 3) {
+            choices.push({id: 'more_speed', name: 'OVERCLOCK SPEED', desc: `Permanently increase movement speed. (${upgrades.more_speed}/3)`, cost: costMoreSpeed});
+        }
+        if ((upgrades.extra_hp || 0) < 5) {
+            choices.push({id: 'extra_hp', name: 'VITALITY CORE', desc: `Gain +1 Max HP capacity container. (${upgrades.extra_hp}/5)`, cost: costExtraHp});
+        }
+        if ((upgrades.curse_choices || 0) < 2) {
+            choices.push({id: 'curse_choices', name: 'CURSE EXPANSION', desc: `Offers 1 additional choice card slot. (${upgrades.curse_choices}/2)`, cost: costCurseChoices});
+        }
+        if ((upgrades.greater_choices || 0) < 1) {
+            choices.push({id: 'greater_choices', name: 'GREATER VISION', desc: `Offers 1 extra GREATER curse selection slot. (${upgrades.greater_choices}/1)`, cost: costGreaterChoices});
+        }
+
+        choices.forEach(ch => {
+            const btn = document.createElement('button');
+            const canAfford = playerMoney >= ch.cost;
+            
+            btn.className = `w-full text-left p-3 rounded-lg border bg-slate-900 transition-all mb-2 flex justify-between items-center ${
+                canAfford ? 'border-slate-700 hover:bg-slate-800 cursor-pointer' : 'border-slate-800 opacity-40 cursor-not-allowed'
+            }`;
+            
+            btn.innerHTML = `
+                <div class="flex-1">
+                    <div class="font-bold text-slate-200 text-sm">${ch.name}</div>
+                    <div class="text-[11px] text-slate-400">${ch.desc}</div>
+                </div>
+                <div class="font-bold text-sm min-w-[60px] text-right ${canAfford ? 'text-amber-300' : 'text-red-400'}">
+                    ${ch.cost}🪙
+                </div>
+            `;
+            
+            btn.addEventListener('click', () => {
+                if (playerMoney < ch.cost) return;
+                playerMoney -= ch.cost;
+                upgrades[ch.id] = (upgrades[ch.id] || 0) + 1;
+                
+                if (ch.id === 'extra_hp' && typeof playerMaxHp !== 'undefined') {
+                    playerMaxHp = 3 + upgrades.extra_hp;
+                    if (typeof playerHp !== 'undefined') playerHp = Math.min(playerMaxHp, playerHp + 1);
+                }
+                
+                updateMoneyUI();
+                renderShopChoices();
+            });
+            container.appendChild(btn);
+        });
+
+        // Continue button allowing players to leave shop voluntarily
+        const continueBtn = document.createElement('button');
+        continueBtn.className = 'w-full text-center p-3 mt-4 rounded-lg border border-emerald-500 bg-emerald-950/40 text-emerald-300 font-bold tracking-wider hover:bg-emerald-900/60 transition-all cursor-pointer';
+        continueBtn.textContent = 'CONTINUE TO NEXT LEVEL ➔';
+        continueBtn.addEventListener('click', () => {
+            if (modal) modal.classList.add('hidden');
+            
+            // Check if purification altar was touched during the level
+            if (activeAltar && activeAltar.type === 'purification' && activeAltar.interacted) {
+                activeAltar = null; // Consume Altar state
+                showPurificationModal(targetLvl, next);
+            } else {
+                activeAltar = null; // Clear standard altar state
+                if (typeof next === 'function') next();
+                else if (typeof initNewLevel === 'function') initNewLevel(targetLvl);
+            }
+        });
+        container.appendChild(continueBtn);
     }
 
-    choices.forEach(ch => {
-        const btn = document.createElement('button');
-        btn.className = 'w-full text-left p-3 rounded-lg border bg-slate-900 transition-all mb-2';
-        btn.innerHTML = `<div class="font-bold">${ch.name} <span class="text-amber-300">${ch.cost}🪙</span></div><div class="text-[11px] text-slate-400">${ch.desc}</div>`;
-        btn.addEventListener('click', () => {
-            if (playerMoney < ch.cost) {
-                playSynthSound('tick_down');
-                return;
-            }
-            playerMoney -= ch.cost;
-            upgrades[ch.id] = (upgrades[ch.id] || 0) + 1;
-            updateMoneyUI();
-            updateAltarUI();
-            modal.classList.add('hidden');
-            initNewLevel(targetLvl);
-        });
-        container.appendChild(btn);
-    });
-
-    modal.classList.remove('hidden');
+    renderShopChoices();
+    if (modal) modal.classList.remove('hidden');
 }
 
-function spawnAltarForLevel(lvl, candidateTiles = []) {
-    // Only spawn altars starting at level 20, max one altar
-    if (lvl < 20) { activeAltar = null; updateAltarUI(); return; }
-    if (activeAltar && activeAltar.level === lvl) return; // already spawned for this level
+// Special Modal for Purifying Curses (Accepts Debt + Spawns extra Limit-Bypassing enemy)
+function showPurificationModal(targetLvl, next) {
+    const modal = document.getElementById('choiceModal');
+    const title = document.getElementById('modalTitle');
+    const sub = document.getElementById('modalSub');
+    const container = document.getElementById('choiceContainer');
 
-    // 30% chance to spawn an altar
-    if (Math.random() > 0.30) { activeAltar = null; updateAltarUI(); return; }
+    if (title) title.textContent = `ALTAR: PURIFICATION`;
+    if (sub) sub.textContent = `Choose one curse to purge. You can go into debt, but an extra permanent enemy will bypass wave security to track you!`;
 
-    const types = ['purification', 'purgatory'];
-    const type = types[Math.floor(Math.random() * types.length)];
+    if (container) {
+        container.innerHTML = '';
 
-    const validTiles = candidateTiles.filter(tile => tile.r !== 0 || tile.c !== 0);
-    let chosenPos = null;
-    if (validTiles.length > 0) {
-        chosenPos = validTiles[Math.floor(Math.random() * validTiles.length)];
+        const activeCurseKeys = [];
+        if (typeof activeCurses !== 'undefined') {
+            for (let key in activeCurses) {
+                if (activeCurses[key]) {
+                    let cost = 30; // base value cost
+                    if (key.includes('medal')) cost = 60;
+                    if (key.includes('greater') || key.includes('lap2')) cost = 85; // lap 2 has the most value
+                    if (key === 'curse_greed_toll') cost = 45;
+
+                    activeCurseKeys.push({ id: key, name: key.replace(/_/g, ' ').toUpperCase(), cost: cost });
+                }
+            }
+        }
+
+        if (activeCurseKeys.length === 0) {
+            const fallbackText = document.createElement('div');
+            fallbackText.className = 'text-center text-xs text-slate-400 italic p-4';
+            fallbackText.textContent = 'You carry no current active curses to purify.';
+            container.appendChild(fallbackText);
+        } else {
+            activeCurseKeys.forEach(curse => {
+                const btn = document.createElement('button');
+                btn.className = 'w-full text-left p-3 rounded-lg border border-purple-900 bg-slate-950 hover:bg-purple-950/40 transition-all mb-2 flex justify-between items-center cursor-pointer';
+                
+                btn.innerHTML = `
+                    <div>
+                        <div class="font-bold text-purple-300 text-xs tracking-wide">${curse.name}</div>
+                        <div class="text-[10px] text-slate-400">Purge curse structure + Spawns 1 extra persistent tracker.</div>
+                    </div>
+                    <div class="font-bold text-sm text-purple-400">${curse.cost}🪙</div>
+                `;
+
+                btn.addEventListener('click', () => {
+                    // Process removal (allows going into debt)
+                    playerMoney -= curse.cost;
+                    activeCurses[curse.id] = false;
+                    updateMoneyUI();
+
+                    // Inject an enemy into the live array that bypasses limits
+                    if (typeof forceSpawnPersistentBypassEnemy === 'function') {
+                        forceSpawnPersistentBypassEnemy();
+                    }
+
+                    if (modal) modal.classList.add('hidden');
+                    if (typeof next === 'function') next();
+                    else if (typeof initNewLevel === 'function') initNewLevel(targetLvl);
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        // Decline Button
+        const skipBtn = document.createElement('button');
+        skipBtn.className = 'w-full text-center p-2 mt-2 rounded-lg border border-slate-700 text-slate-400 text-xs hover:bg-slate-800 transition-all cursor-pointer';
+        skipBtn.textContent = 'Decline Purification (Keep Curses)';
+        skipBtn.addEventListener('click', () => {
+            if (modal) modal.classList.add('hidden');
+            if (typeof next === 'function') next();
+            else if (typeof initNewLevel === 'function') initNewLevel(targetLvl);
+        });
+        container.appendChild(skipBtn);
+    }
+
+    if (modal) modal.classList.remove('hidden');
+}
+
+function spawnAltarForLevel(lvl) {
+    // Spawns starting at level 20, exactly every 2 levels, once per level.
+    if (lvl < 20 || lvl % 2 !== 0) { 
+        activeAltar = null; 
+        updateAltarUI(); 
+        return; 
     }
 
     activeAltar = {
-        type: type,
+        type: Math.random() < 0.5 ? 'purification' : 'purgatory',
         level: lvl,
-        pos: chosenPos,
-        interacted: false,
-        purified: false,
-        spawnedAt: Date.now(),
-        expiresAt: Date.now() + 60000 // lasts 60s or until used
+        x: Math.random() * 500 + 150, // Physical canvas location coordinates
+        y: Math.random() * 500 + 150,
+        interacted: false
     };
     updateAltarUI();
 }
@@ -110,36 +269,29 @@ function updateAltarUI() {
         el.textContent = 'None';
         return;
     }
-    const remaining = Math.max(0, Math.floor((activeAltar.expiresAt - Date.now()) / 1000));
-    if (activeAltar.type === 'purification') {
-        el.textContent = `Purification (${remaining}s)${activeAltar.interacted ? ' - Activated' : ''}`;
+    if (activeAltar.interacted) {
+        el.textContent = `${activeAltar.type.toUpperCase()} (ACTIVATED)`;
     } else {
-        el.textContent = `Purgatory (${remaining}s)${activeAltar.interacted ? ' - Touched' : ''}`;
-    }
-}
-
-function clearExpiredAltar() {
-    if (!activeAltar) return;
-    if (Date.now() >= activeAltar.expiresAt) {
-        activeAltar = null;
-        updateAltarUI();
+        el.textContent = `${activeAltar.type.toUpperCase()} AVAILABLE IN WORLD`;
     }
 }
 
 function updateEnemyList() {
     const el = document.getElementById('enemyListDisplay');
     if (!el) return;
-    if (typeof selectedEnemies === 'undefined') { el.textContent = '—'; return; }
-    const parts = [];
-    for (let [k, v] of Object.entries(selectedEnemies)) {
-        if (v > 0) parts.push(`${k}: ${v}`);
-    }
-    if (parts.length === 0) el.textContent = 'None';
-    else el.textContent = parts.join(' | ');
+    if (typeof enemies === 'undefined') { el.textContent = '—'; return; }
+    
+    let standardCount = 0;
+    let tempCount = 0;
+    
+    enemies.forEach(e => {
+        if (e.isTemporary) tempCount++;
+        else standardCount++;
+    });
+    
+    el.innerHTML = `<span style="color: #e2e8f0">Standard: ${standardCount}</span> | <span style="color: #22d3ee; opacity: 0.8">Ghost/Temp: ${tempCount}</span>`;
 }
 
-// Periodic UI tick to keep altar/money displays fresh
-setInterval(() => { try { updateAltarUI(); updateMoneyUI(); clearExpiredAltar(); } catch(e){} }, 800);
-
-// Ensure initial UI state
+// Periodic UI tick to keep displays fresh
+setInterval(() => { try { updateAltarUI(); updateMoneyUI(); updateEnemyList(); } catch(e){} }, 800);
 window.addEventListener('load', () => { updateMoneyUI(); updateAltarUI(); updateEnemyList(); });

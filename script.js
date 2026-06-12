@@ -99,6 +99,68 @@ window.stopIntermissionMusic = function() {
         intermissionAudio.ontimeupdate = null;
     }
 };
+
+// --- GAMEPLAY (IN-LEVEL) MUSIC ENGINE ---
+// Add as many tracks as you want. minLvl/maxLvl define which levels a track can be picked for.
+// When a new level starts, a random eligible track is chosen.
+const gameplayPlaylist = [
+    { file: 'Kenophobia.mp3', minLvl: 1,  maxLvl: 15 },
+    { file: 'Domasp.mp3', minLvl: 1,  maxLvl: 60 },
+    { file: 'Baby_Face.ogg', minLvl: 1,  maxLvl: 25 },
+    { file: 'Conviction.ogg', minLvl: 20,  maxLvl: Infinity },
+    { file: 'FearOfShadow.ogg', minLvl: 20,  maxLvl: 50 },
+    { file: 'Line_of_Fire.ogg', minLvl: 20,  maxLvl: 50 },
+    { file: 'Aerodynamics.mp3', minLvl: 35,  maxLvl: 80 },
+    
+    { file: 'DECAY-TRUE.mp3', minLvl: 45,  maxLvl: 80 },
+    
+    { file: 'cadence.mp3', minLvl: 50,  maxLvl: Infinity },
+];
+
+let gameplayAudio = null;
+let currentGameplayTrackFile = "";
+
+// Pick (and start) a random gameplay track eligible for the given level
+window.playGameplayMusic = function(levelNum) {
+    const eligible = gameplayPlaylist.filter(t => levelNum >= t.minLvl && levelNum <= t.maxLvl);
+    if (eligible.length === 0) return;
+
+    const chosen = eligible[Math.floor(Math.random() * eligible.length)];
+
+    if (gameplayAudio && currentGameplayTrackFile === chosen.file) {
+        if (gameplayAudio.paused) gameplayAudio.play().catch(() => {});
+        return;
+    }
+
+    if (gameplayAudio) {
+        gameplayAudio.pause();
+        gameplayAudio.currentTime = 0;
+    }
+
+    gameplayAudio = new Audio(chosen.file);
+    gameplayAudio.loop = true;
+    gameplayAudio.volume = 0.35;
+    currentGameplayTrackFile = chosen.file;
+
+    gameplayAudio.play().catch(err => {
+        console.warn("Gameplay music waiting for user interaction:", err);
+    });
+};
+
+window.resumeGameplayMusic = function() {
+    if (gameplayAudio && gameplayAudio.paused) gameplayAudio.play().catch(() => {});
+};
+
+window.pauseGameplayMusic = function() {
+    if (gameplayAudio && !gameplayAudio.paused) gameplayAudio.pause();
+};
+
+window.stopGameplayMusic = function() {
+    if (gameplayAudio) {
+        gameplayAudio.pause();
+        gameplayAudio.currentTime = 0;
+    }
+};
 // --- SYSTEM UTILITIES (Restored) ---
 function safeAddEvent(element, type, handler) {
     if (element) element.addEventListener(type, handler);
@@ -562,6 +624,15 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         let winPos = { r: 9, c: 9 };
         let activeLevelRunning = false;
 
+        // --- FREE 2D MOVEMENT STATE ---
+        // playerVisualPos is the continuous (analog) position in tile units.
+        // playerPos.r/c remains the "logical" tile the player currently occupies,
+        // and is what all gameplay logic (coins, win, altars, etc.) checks against.
+        let playerVisualPos = { x: 0.5, y: 0.5 };
+        const PLAYER_RADIUS = 0.30;      // collision circle radius, in tile units
+        const PLAYER_SPEED = 4.0;        // tiles per second at normal speed
+        let keysHeld = { up: false, down: false, left: false, right: false };
+
         // Visual effects
         let screenShake = 0;
         let particles = [];
@@ -623,6 +694,11 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             medal_goldrush: false,
             medal_barrage: false,
             medal_frenzy: false,
+            medal_overcharge: false,
+            medal_swift: false,
+            medal_voidtide: false,
+            medal_ironhide: false,
+            medal_chaosweave: false,
             // Lap 2 persistent curse
             lap2: false,
             // Generic Fallback Greater Curses
@@ -1164,6 +1240,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         // Handle game engine initiation flow
         function initNewLevel(nextLvl) {
             if (typeof window.stopIntermissionMusic === 'function') window.stopIntermissionMusic();
+            if (typeof window.playGameplayMusic === 'function') window.playGameplayMusic(nextLvl);
             currentLevel = nextLvl;
             document.getElementById('levelDisplay').textContent = currentLevel;
             
@@ -1176,6 +1253,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
             // Establish guaranteed single player spawn
             playerPos = { r: 0, c: 0 };
+            playerVisualPos = { x: 0.5, y: 0.5 };
             grid[0][0] = 0;
 
             // ABSOLUTE LOCK PREVENTION: BFS from player pos to locate ALL verified walkable coordinates
@@ -1407,114 +1485,187 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             }
         }
 
-        // Core Event Handlers for Player Movement Ticks
-        function movePlayer(dr, dc) {
+        // Runs all "stepped onto a new tile" gameplay logic. Called whenever the player's
+        // logical tile (playerPos.r/c) changes due to continuous movement.
+        function onPlayerEnterTile() {
+            playSynthSound('move');
+
+            // Particle trail trace
+            spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#6366f1', 4);
+
+            // Check if player stepped on infected tile
+            const stepOnInfection = infectedTiles.some(t => t.r === playerPos.r && t.c === playerPos.c);
+            if (stepOnInfection) {
+                document.getElementById('slowdownContainer').classList.remove('hidden');
+            } else {
+                document.getElementById('slowdownContainer').classList.add('hidden');
+            }
+
+            // Collect coins if player moves over them (Level 10+)
+            if (currentLevel >= 10) {
+                const coinIndex = coinsList.findIndex(coin => coin.r === playerPos.r && coin.c === playerPos.c);
+                if (coinIndex !== -1) {
+                    coinsList.splice(coinIndex, 1);
+                    addCoins(1);
+                    let bonusCoins = 0;
+                    if (activeCurses.medal_goldrush) bonusCoins += 1;
+                    if (activeCurses.medal_swift) bonusCoins += 1;
+                    if (activeCurses.medal_voidtide) bonusCoins += 2;
+                    if (activeCurses.medal_ironhide) bonusCoins += 3;
+                    if (activeCurses.medal_chaosweave) bonusCoins += 2;
+                    if (bonusCoins > 0) {
+                        addCoins(bonusCoins);
+                        spawnFloatingText(playerPos.r, playerPos.c, `+${1 + bonusCoins} 🪙`, "#f59e0b");
+                    } else {
+                        spawnFloatingText(playerPos.r, playerPos.c, "+1 🪙", "#fbbf24");
+                    }
+                    if (activeCurses.medal_frenzy) {
+                        spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#f97316', 18);
+                    } else {
+                        spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#fbbf24', 15);
+                    }
+                    playSynthSound('coin_pickup');
+
+                    if (activeCurses.lap2) {
+                        lap2CollectedThisPhase++;
+                        if (lap2Phase === 1 && lap2CollectedThisPhase >= lap2TotalCoins) {
+                            startLap2SecondPhase();
+                        }
+                        if (lap2Phase === 2 && lap2CollectedThisPhase >= lap2TotalCoins) {
+                            lap2CollapseActive = false;
+                        }
+                    }
+                }
+            }
+
+            if (activeAltar && activeAltar.pos && playerPos.r === activeAltar.pos.r && playerPos.c === activeAltar.pos.c) {
+                interactWithAltar();
+            }
+
+            if (medalSpawned && medalPos && playerPos.r === medalPos.r && playerPos.c === medalPos.c) {
+                medalCollected = true;
+                medalSpawned = false;
+                medalPos = null;
+                playSynthSound('powerup');
+                spawnFloatingText(playerPos.r, playerPos.c, "MEDAL SECURED", "#f59e0b");
+                spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#f59e0b', 20);
+            }
+
+            // Win check
+            if (playerPos.r === winPos.r && playerPos.c === winPos.c) {
+                const isExitLocked = !canUseExit();
+                if (!isExitLocked) {
+                    handleWinLevel();
+                } else {
+                    screenShake = Math.max(screenShake, 3);
+                    playSynthSound('tick_down');
+                }
+            }
+        }
+
+        // Checks whether a circle of PLAYER_RADIUS centered at (x, y) overlaps any wall tile
+        function circleHitsWall(x, y) {
+            const minC = Math.floor(x - PLAYER_RADIUS);
+            const maxC = Math.floor(x + PLAYER_RADIUS);
+            const minR = Math.floor(y - PLAYER_RADIUS);
+            const maxR = Math.floor(y + PLAYER_RADIUS);
+
+            for (let r = minR; r <= maxR; r++) {
+                for (let c = minC; c <= maxC; c++) {
+                    if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) {
+                        return true; // outside map bounds counts as a wall
+                    }
+                    if (grid[r][c] !== 1) continue;
+
+                    // Circle vs AABB (tile) overlap test
+                    const closestX = Math.max(c, Math.min(x, c + 1));
+                    const closestY = Math.max(r, Math.min(y, r + 1));
+                    const dx = x - closestX;
+                    const dy = y - closestY;
+                    if (dx * dx + dy * dy < PLAYER_RADIUS * PLAYER_RADIUS) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Continuous free-movement update, called every frame from gameUpdateLoop
+        function updatePlayerMovement(dt) {
             if (!activeLevelRunning) return;
 
-            // Cooldown check (Slowdown from infected flesh blocks)
             const now = Date.now();
-            if (now < playerNextMoveAllowedTime) {
-                return;
+
+            // Input delay curse effect (System Lag): briefly zero out movement input
+            let inputBlocked = false;
+            if (activeCurses.system_lag && Math.random() < 0.12) {
+                inputBlocked = true;
             }
 
-            // Input delay curse effect (System Lag)
-            if (activeCurses.system_lag && Math.random() < 0.12) {
-                playerNextMoveAllowedTime = now + 150; // brief packet loss spike
+            let dx = 0;
+            let dy = 0;
+            if (!inputBlocked) {
+                if (keysHeld.up) dy -= 1;
+                if (keysHeld.down) dy += 1;
+                if (keysHeld.left) dx -= 1;
+                if (keysHeld.right) dx += 1;
             }
+
+            if (dx === 0 && dy === 0) return;
+
+            // Normalize diagonal movement
+            const len = Math.sqrt(dx * dx + dy * dy);
+            dx /= len;
+            dy /= len;
 
             // Polarity inversion greater curse effect
             if (activeCurses.reversed_polarity && polarityInverted) {
-                dr = -dr;
-                dc = -dc;
+                dx = -dx;
+                dy = -dy;
             }
 
-            const nextR = playerPos.r + dr;
-            const nextC = playerPos.c + dc;
+            // Slowdown from standing on infected tiles
+            const onInfection = infectedTiles.some(t => t.r === playerPos.r && t.c === playerPos.c);
+            const speedMultiplier = onInfection ? 0.45 : 1.0;
 
-            // Boundary and barrier collision check for PLAYER
-            if (nextR >= 0 && nextR < GRID_SIZE && nextC >= 0 && nextC < GRID_SIZE) {
-                if (grid[nextR][nextC] !== 1) {
-                    playerPos.r = nextR;
-                    playerPos.c = nextC;
-                    playerLastMovedTime = now; // Reset freeze check validation tracker
-                    
-                    playSynthSound('move');
-                    
-                    // Particle trail trace
-                    spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#6366f1', 4);
+            const moveDist = (PLAYER_SPEED + (upgrades.more_speed || 0) * 0.6) * speedMultiplier * (dt / 1000);
 
-                    // Check if player stepped on infected tile
-                    const stepOnInfection = infectedTiles.some(t => t.r === playerPos.r && t.c === playerPos.c);
-                    if (stepOnInfection) {
-                        playerNextMoveAllowedTime = now + 500; // Adds a 0.5 second cooldown to every move
-                        document.getElementById('slowdownContainer').classList.remove('hidden');
-                    } else {
-                        document.getElementById('slowdownContainer').classList.add('hidden');
-                    }
+            const prevX = playerVisualPos.x;
+            const prevY = playerVisualPos.y;
 
-                    // Collect coins if player moves over them (Level 10+)
-                    if (currentLevel >= 10) {
-                        const coinIndex = coinsList.findIndex(coin => coin.r === playerPos.r && coin.c === playerPos.c);
-                        if (coinIndex !== -1) {
-                            coinsList.splice(coinIndex, 1);
-                            addCoins(1);
-                            if (activeCurses.medal_goldrush) {
-                                addCoins(1);
-                                spawnFloatingText(playerPos.r, playerPos.c, "+2 🪙", "#f59e0b");
-                            } else {
-                                spawnFloatingText(playerPos.r, playerPos.c, "+1 🪙", "#fbbf24");
-                            }
-                            if (activeCurses.medal_frenzy) {
-                                spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#f97316', 18);
-                            } else {
-                                spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#fbbf24', 15);
-                            }
-                            playSynthSound('coin_pickup');
+            // Try moving on X and Y independently so the player can slide along walls
+            const tryX = playerVisualPos.x + dx * moveDist;
+            if (!circleHitsWall(tryX, playerVisualPos.y)) {
+                playerVisualPos.x = tryX;
+            }
 
-                            if (activeCurses.lap2) {
-                                lap2CollectedThisPhase++;
-                                if (lap2Phase === 1 && lap2CollectedThisPhase >= lap2TotalCoins) {
-                                    startLap2SecondPhase();
-                                }
-                                if (lap2Phase === 2 && lap2CollectedThisPhase >= lap2TotalCoins) {
-                                    lap2CollapseActive = false;
-                                }
-                            }
-                        }
-                    }
+            const tryY = playerVisualPos.y + dy * moveDist;
+            if (!circleHitsWall(playerVisualPos.x, tryY)) {
+                playerVisualPos.y = tryY;
+            }
 
-                    if (activeAltar && activeAltar.pos && playerPos.r === activeAltar.pos.r && playerPos.c === activeAltar.pos.c) {
-                        interactWithAltar();
-                    }
+            const moved = (playerVisualPos.x !== prevX) || (playerVisualPos.y !== prevY);
+            if (!moved) {
+                screenShake = Math.max(screenShake, 1.5);
+                return;
+            }
 
-                    if (medalSpawned && medalPos && playerPos.r === medalPos.r && playerPos.c === medalPos.c) {
-                        medalCollected = true;
-                        medalSpawned = false;
-                        medalPos = null;
-                        playSynthSound('powerup');
-                        spawnFloatingText(playerPos.r, playerPos.c, "MEDAL SECURED", "#f59e0b");
-                        spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#f59e0b', 20);
-                    }
+            playerLastMovedTime = now;
 
-                    // Win check
-                    if (playerPos.r === winPos.r && playerPos.c === winPos.c) {
-                        const isExitLocked = !canUseExit();
-                        if (!isExitLocked) {
-                            handleWinLevel();
-                        } else {
-                            screenShake = Math.max(screenShake, 3);
-                            playSynthSound('tick_down');
-                        }
-                    }
-                } else {
-                    screenShake = 4;
-                }
+            // Determine logical tile from continuous position and run tile-enter triggers if changed
+            const newR = Math.floor(playerVisualPos.y);
+            const newC = Math.floor(playerVisualPos.x);
+            if (newR !== playerPos.r || newC !== playerPos.c) {
+                playerPos.r = newR;
+                playerPos.c = newC;
+                onPlayerEnterTile();
             }
         }
 
         // Game State Transition Controllers
         function handleWinLevel() {
             activeLevelRunning = false;
+            if (typeof window.stopGameplayMusic === 'function') window.stopGameplayMusic();
             playSynthSound('level_win');
             spawnGridWinParticles(winPos.r, winPos.c);
 
@@ -1544,14 +1695,15 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
                 // Build the list of intermission steps that apply this round, in display order
                 const queue = [];
-                if (nextLvl % 10 === 0 && nextLvl > 5 && nextLvl < 30 && typeof showUpgradeModal === 'function') {
-                    queue.push((lvl, next) => showUpgradeModal(lvl, next));
-                }
+                
                 if (isEnemyChoiceLevel(nextLvl)) {
                     queue.push((lvl, next) => showEnemyChoiceModal(lvl, next));
                 }
                 if (isCurseChoiceLevel(nextLvl)) {
                     queue.push((lvl, next) => showCurseChoiceModal(lvl, false, next));
+                }
+                if (nextLvl % 5 === 0 && nextLvl > 1 && nextLvl < 1000 && typeof showUpgradeModal === 'function') {
+                    queue.push((lvl, next) => showUpgradeModal(lvl, next));
                 }
 
                 const runQueue = (lvl, steps, i) => {
@@ -1580,7 +1732,10 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         function canUseExit() {
             if (activeCurses.lap2) {
                 if (lap2TotalCoins <= 0) return true;
-                return (lap2TotalCoins - coinsList.length) >= Math.ceil(lap2TotalCoins * 0.4);
+                // Phase 1: must collect ALL original coins before lap2 phase 2 even begins
+                if (lap2Phase === 1) return false;
+                // Phase 2: must collect at least 40% of the recollected lap2 coins
+                return lap2CollectedThisPhase >= Math.ceil(lap2TotalCoins * 0.4);
             }
             return coinsList.length === 0;
         }
@@ -1622,17 +1777,47 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         }
 
         function interactWithAltar() {
-            if (!activeAltar || !activeAltar.pos || activeAltar.interacted) return;
-            activeAltar.interacted = true;
-            if (activeAltar.type === 'purification') {
-                spawnFloatingText(playerPos.r, playerPos.c, "PURIFICATION SIGNAL", "#34d399");
-                playSynthSound('heal');
-            } else {
-                spawnFloatingText(playerPos.r, playerPos.c, "PURGATORY TOUCH", "#6366f1");
-                playSynthSound('hit');
+    if (!activeAltar || !activeAltar.pos || activeAltar.interacted) return;
+    activeAltar.interacted = true;
+    
+    if (activeAltar.type === 'purification') {
+        spawnFloatingText(playerPos.r, playerPos.c, "PURIFICATION SIGNAL", "#34d399");
+        playSynthSound('heal');
+    } else {
+        spawnFloatingText(playerPos.r, playerPos.c, "PURGATORY AMBUSH!", "#ef4444");
+        playSynthSound('hit');
+        screenShake = 15; // Give it some impact
+
+        // 1. Build a pool of enemies currently active in your run
+        let eligiblePool = [];
+        if (typeof selectedEnemies !== 'undefined') {
+            for (let [enemyName, count] of Object.entries(selectedEnemies)) {
+                if (count > 0) {
+                    // Match your specific spawner types
+                    if (enemyName.includes('shooter')) eligiblePool.push('shooter');
+                    if (enemyName === 'flesh') eligiblePool.push('flesh');
+                    if (enemyName === 'chaser') eligiblePool.push('chaser');
+                    if (enemyName.includes('screamer')) eligiblePool.push('screamer');
+                }
             }
-            try { if (typeof updateAltarUI === 'function') updateAltarUI(); } catch(e) {}
         }
+        
+        // Fallback if they haven't drafted anything yet
+        if (eligiblePool.length === 0) eligiblePool.push('chaser');
+
+        // 2. Trigger the Purgatory Ambush (Spawns 7 to 10 enemies)
+        let ambushCount = Math.floor(Math.random() * 4) + 7;
+        for (let i = 0; i < ambushCount; i++) {
+            let randomType = eligiblePool[Math.floor(Math.random() * eligiblePool.length)];
+            // Let your engine handle finding safe coordinates and adding them to the right lists
+            if (typeof spawnEntityInstance === 'function') {
+                spawnEntityInstance(randomType);
+            }
+        }
+    }
+    
+    try { if (typeof updateAltarUI === 'function') updateAltarUI(); } catch(e) {}
+}
 
         // Action penalty for violating Red Light/Green Light Halt Checks
         function penalityFreezeCheck() {
@@ -1643,6 +1828,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
         function damagePlayer(amt = 1) {
             if (!activeLevelRunning) return;
+            if (activeCurses.medal_ironhide) amt += 1;
             playerHealth -= amt;
             screenShake = 15;
             damageFlashTime = 200; // Bright crimson glitch overlay
@@ -1659,6 +1845,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
         function handleGameOver() {
             activeLevelRunning = false;
+            if (typeof window.stopGameplayMusic === 'function') window.stopGameplayMusic();
             try { playerMoney = 0; upgrades = { more_money: 0, shield: 0, coin_radar: 0 }; activeAltar = null; lastPurificationLevel = -999; } catch(e) {}
             try { if (typeof updateMoneyUI === 'function') updateMoneyUI(); } catch(e) {}
             try { if (typeof updateAltarUI === 'function') updateAltarUI(); } catch(e) {}
@@ -1702,6 +1889,11 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 medal_goldrush: false,
                 medal_barrage: false,
                 medal_frenzy: false,
+                medal_overcharge: false,
+                medal_swift: false,
+                medal_voidtide: false,
+                medal_ironhide: false,
+                medal_chaosweave: false,
                 lap2: false,
                 reversed_polarity: false,
                 port_shift: false
@@ -1955,6 +2147,41 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                     desc: 'Chasers sprint faster and alarm systems are accelerated. Coins grant bonus rewards to offset the mayhem.',
                     icon: '⚡',
                     color: 'border-fuchsia-500 hover:bg-fuchsia-950/30 text-fuchsia-300 border-2'
+                },
+                {
+                    id: 'medal_overcharge',
+                    name: 'OVERCHARGE CORE',
+                    desc: 'Bomboclat explosions are bigger and detonate faster. Coins yield additional credit.',
+                    icon: '💣',
+                    color: 'border-orange-500 hover:bg-orange-950/30 text-orange-300 border-2'
+                },
+                {
+                    id: 'medal_swift',
+                    name: 'SWIFT PURSUIT',
+                    desc: 'Chasers and Screamers move and dash noticeably faster. Coins grant bonus rewards.',
+                    icon: '🏃',
+                    color: 'border-sky-500 hover:bg-sky-950/30 text-sky-300 border-2'
+                },
+                {
+                    id: 'medal_voidtide',
+                    name: 'VOID TIDE',
+                    desc: 'Red Light/Green Light events trigger more often and give less reaction time. Coins yield large bonus credit.',
+                    icon: '🌊',
+                    color: 'border-teal-500 hover:bg-teal-950/30 text-teal-300 border-2'
+                },
+                {
+                    id: 'medal_ironhide',
+                    name: 'IRONHIDE PROTOCOL',
+                    desc: 'All damage taken is increased by +1. Coins yield substantial bonus credit to compensate.',
+                    icon: '🩸',
+                    color: 'border-rose-500 hover:bg-rose-950/30 text-rose-300 border-2'
+                },
+                {
+                    id: 'medal_chaosweave',
+                    name: 'CHAOS WEAVE',
+                    desc: 'Shooters and trains fire/spawn more frequently and screen static intensifies. Coins yield bonus credit.',
+                    icon: '🌀',
+                    color: 'border-violet-500 hover:bg-violet-950/30 text-violet-300 border-2'
                 }
             ];
 
@@ -2382,7 +2609,12 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 lap2: { text: '🌪️ LAP 2', style: 'bg-violet-950/40 text-violet-300 border-violet-500/40' },
                 medal_goldrush: { text: '🪙 GOLDEN RUSH', style: 'bg-amber-950/40 text-amber-300 border-amber-500/40' },
                 medal_barrage: { text: '🔥 MEDAL BARRAGE', style: 'bg-red-950/40 text-red-300 border-red-500/40' },
-                medal_frenzy: { text: '⚡ FRANTIC FRENZY', style: 'bg-fuchsia-950/40 text-fuchsia-300 border-fuchsia-500/40' }
+                medal_frenzy: { text: '⚡ FRANTIC FRENZY', style: 'bg-fuchsia-950/40 text-fuchsia-300 border-fuchsia-500/40' },
+                medal_overcharge: { text: '💣 OVERCHARGE CORE', style: 'bg-orange-950/40 text-orange-300 border-orange-500/40' },
+                medal_swift: { text: '🏃 SWIFT PURSUIT', style: 'bg-sky-950/40 text-sky-300 border-sky-500/40' },
+                medal_voidtide: { text: '🌊 VOID TIDE', style: 'bg-teal-950/40 text-teal-300 border-teal-500/40' },
+                medal_ironhide: { text: '🩸 IRONHIDE', style: 'bg-rose-950/40 text-rose-300 border-rose-500/40' },
+                medal_chaosweave: { text: '🌀 CHAOS WEAVE', style: 'bg-violet-950/40 text-violet-300 border-violet-500/40' }
             };
 
             for (let [key, val] of Object.entries(activeCurses)) {
@@ -2483,6 +2715,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             }
 
             // Live Updates
+            updatePlayerMovement(deltaTime);
             updateShooters(deltaTime);
             updateBullets(deltaTime);
             updateBombs(deltaTime);
@@ -2505,6 +2738,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             const now = Date.now();
             let shootInterval = activeCurses.shooter_faster ? 1500 : 3000;
             if (activeCurses.medal_barrage) shootInterval *= 0.65;
+            if (activeCurses.medal_chaosweave) shootInterval *= 0.8;
 
             shootersList.forEach(s => {
                 const targetX = playerPos.c + 0.5;
@@ -2660,10 +2894,16 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                         if (activeCurses.doomsday_charge) {
                             warnDuration = 750;
                         }
+                        if (activeCurses.medal_overcharge) {
+                            warnDuration *= 0.7;
+                        }
 
                         let radius = activeCurses.bomb_bigger ? 3 : 2; 
                         if (activeCurses.doomsday_charge) {
                             radius = 4; // massive 9x9 zone
+                        }
+                        if (activeCurses.medal_overcharge) {
+                            radius += 1;
                         }
 
                         bombsList.push({
@@ -2727,6 +2967,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 if (currentLevel >= 25) interval *= 0.5; // 50% faster spawn rate after level 25
                 if (activeCurses.medal_barrage) interval *= 0.75;
                 if (activeCurses.medal_frenzy) interval *= 0.85;
+                if (activeCurses.medal_chaosweave) interval *= 0.8;
                 if (now - trainSpawnTimer >= interval) {
                     trainSpawnTimer = now;
 
@@ -2950,8 +3191,9 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 const chaserBoostInterval = currentLevel >= 25 ? 3 : 8;
                 const lvlBoost = Math.pow(1.10, Math.floor(currentLevel / chaserBoostInterval));
                 const curseBoost = Math.pow(1.20, activeCurses.chaser_boost);
+                const medalSwiftBoost = activeCurses.medal_swift ? 1.25 : 1;
 
-                const finalSpeed = baseSpeed * c.speedMultiplier * lvlBoost * curseBoost * dt;
+                const finalSpeed = baseSpeed * c.speedMultiplier * lvlBoost * curseBoost * medalSwiftBoost * dt;
 
                 if (dist > 0.05) {
                     c.x += (dx / dist) * Math.min(finalSpeed, dist);
@@ -2991,6 +3233,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                         const stacks = Math.min(2, activeCurses.screamer_faster || 0);
                         let speedMultiplier = 1 + 0.75 * stacks; // curse-based speed
                         if (s.isVoidbound) speedMultiplier *= 2; // voidbound 100% faster
+                        if (activeCurses.medal_swift) speedMultiplier *= 1.25;
                         const baseDash = 500;
                         const progress = Math.min(1.0, elapsed / (baseDash / speedMultiplier));
 
@@ -3132,6 +3375,9 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 if (activeCurses.overload_protocol) {
                     limitTime = 1800;
                 }
+                if (activeCurses.medal_voidtide) {
+                    limitTime *= 0.75;
+                }
 
                 const progress = now - greenLightTimer;
                 document.getElementById('greenLightTimer').textContent = `Reaction Time: ${( (limitTime - progress) / 1000 ).toFixed(1)}s`;
@@ -3156,14 +3402,16 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                     playSynthSound('green_light_pass');
                     
                     const baseInterval = activeCurses.overload_protocol ? 3000 : 6000;
-                    greenLightSpawnTimer = now + baseInterval + Math.random() * baseInterval;
+                    const voidtideMult = activeCurses.medal_voidtide ? 0.7 : 1;
+                    greenLightSpawnTimer = now + (baseInterval + Math.random() * baseInterval) * voidtideMult;
                 } else if (progress >= limitTime) {
                     greenLightActive = false;
                     document.getElementById('greenLightOverlay').style.opacity = '0';
                     penalityFreezeCheck();
                     
                     const baseInterval = activeCurses.overload_protocol ? 3000 : 6000;
-                    greenLightSpawnTimer = now + baseInterval + Math.random() * baseInterval;
+                    const voidtideMult = activeCurses.medal_voidtide ? 0.7 : 1;
+                    greenLightSpawnTimer = now + (baseInterval + Math.random() * baseInterval) * voidtideMult;
                 }
             }
         }
@@ -3210,8 +3458,8 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
             if (useCamera) {
                 // Smooth camera interpolation tracking the player's core
-                smoothCamX += ((playerPos.c + 0.5) - smoothCamX) * 0.1;
-                smoothCamY += ((playerPos.r + 0.5) - smoothCamY) * 0.1;
+                smoothCamX += (playerVisualPos.x - smoothCamX) * 0.1;
+                smoothCamY += (playerVisualPos.y - smoothCamY) * 0.1;
 
                 // Clamp smooth camera view frame within grid absolute limits
                 const minCam = VIEW_TILES / 2;
@@ -3796,23 +4044,26 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 ctx.fill();
             });
 
-            // 14. Draw Player Node
-            const px = playerPos.c * cellSize;
-            const py = playerPos.r * cellSize;
+            // 14. Draw Player Node (centered on continuous visual position)
+            const pcx = playerVisualPos.x * cellSize;
+            const pcy = playerVisualPos.y * cellSize;
+            const pSize = cellSize * 0.7;
+            const px = pcx - pSize / 2;
+            const py = pcy - pSize / 2;
 
             ctx.shadowBlur = 10;
             ctx.shadowColor = '#6366f1';
             
             ctx.fillStyle = '#818cf8';
-            ctx.fillRect(px + cellSize * 0.15, py + cellSize * 0.15, cellSize * 0.7, cellSize * 0.7);
+            ctx.fillRect(px, py, pSize, pSize);
 
             ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 2;
-            ctx.strokeRect(px + cellSize * 0.15, py + cellSize * 0.15, cellSize * 0.7, cellSize * 0.7);
+            ctx.strokeRect(px, py, pSize, pSize);
             ctx.shadowBlur = 0;
 
             ctx.fillStyle = '#020617';
-            ctx.fillRect(px + cellSize * 0.3, py + cellSize * 0.3, cellSize * 0.4, cellSize * 0.15);
+            ctx.fillRect(px + pSize * 0.21, py + pSize * 0.21, pSize * 0.57, pSize * 0.21);
 
             // 15. Draw Graphics Particles (Rendered dynamically inside the translated context)
             particles.forEach(p => {
@@ -3841,7 +4092,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             ctx.restore(); // Restore camera translation state
 
             // 17. Draw UI Static terminal overlay curse
-            if (activeCurses.ui_static && Math.random() < 0.2) {
+            if ((activeCurses.ui_static || activeCurses.medal_chaosweave) && Math.random() < (activeCurses.medal_chaosweave ? 0.35 : 0.2)) {
                 ctx.save();
                 ctx.fillStyle = 'rgba(236, 72, 153, 0.04)';
                 ctx.fillRect(0, Math.random() * size, size, Math.random() * 10 + 2);
@@ -3914,15 +4165,68 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                     ctx.shadowColor = isExitLocked ? '#fbbf24' : '#10b981';
                     ctx.fillStyle = isExitLocked ? '#fbbf24' : '#10b981';
 
-                    ctx.beginPath();
-                    ctx.moveTo(10, 0);
-                    ctx.lineTo(-6, -6);
-                    ctx.lineTo(-3, 0);
-                    ctx.lineTo(-6, 6);
-                    ctx.closePath();
-                    ctx.fill();
-
                     ctx.restore();
+                }
+            }
+
+            // 21b. Coin Radar Upgrade: Off-Screen Indicator Arrow towards nearest coin
+            if (useCamera && upgrades.coin_radar > 0 && coinsList.length > 0) {
+                let nearest = null;
+                let nearestDist = Infinity;
+                coinsList.forEach(coin => {
+                    const d = Math.hypot(coin.c - playerVisualPos.x, coin.r - playerVisualPos.y);
+                    if (d < nearestDist) { nearestDist = d; nearest = coin; }
+                });
+
+                if (nearest) {
+                    const coinScreenX = (nearest.c + 0.5 - leftTile) * cellSize;
+                    const coinScreenY = (nearest.r + 0.5 - topTile) * cellSize;
+
+                    if (coinScreenX < 0 || coinScreenX > size || coinScreenY < 0 || coinScreenY > size) {
+                        const dx = coinScreenX - size / 2;
+                        const dy = coinScreenY - size / 2;
+                        const angle = Math.atan2(dy, dx);
+
+                        const padding = 40;
+                        const boundX = size / 2 - padding;
+                        const boundY = size / 2 - padding;
+
+                        let arrowX, arrowY;
+
+                        if (Math.abs(dx) * boundY > Math.abs(dy) * boundX) {
+                            if (dx > 0) {
+                                arrowX = size / 2 + boundX;
+                                arrowY = size / 2 + boundX * (dy / dx);
+                            } else {
+                                arrowX = size / 2 - boundX;
+                                arrowY = size / 2 - boundX * (dy / dx);
+                            }
+                        } else {
+                            if (dy > 0) {
+                                arrowY = size / 2 + boundY;
+                                arrowX = size / 2 + boundY * (dx / dy);
+                            } else {
+                                arrowY = size / 2 - boundY;
+                                arrowX = size / 2 - boundY * (dx / dy);
+                            }
+                        }
+
+                        ctx.save();
+                        ctx.translate(arrowX, arrowY);
+                        ctx.rotate(angle);
+                        ctx.globalAlpha = 0.85;
+                        ctx.shadowBlur = 8;
+                        ctx.shadowColor = '#fbbf24';
+                        ctx.fillStyle = '#fbbf24';
+                        ctx.beginPath();
+                        ctx.moveTo(7, 0);
+                        ctx.lineTo(-4, -4);
+                        ctx.lineTo(-2, 0);
+                        ctx.lineTo(-4, 4);
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.restore();
+                    }
                 }
             }
 
@@ -3991,22 +4295,39 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             requestAnimationFrame(gameUpdateLoop);
         });
 
-        // Touch Control & Keyboard Core Events
+        // Touch Control & Keyboard Core Events (continuous / held-key movement)
         window.addEventListener('keydown', (e) => {
             const key = e.key.toLowerCase();
-            if (key === 'w' || key === 'arrowup') movePlayer(-1, 0);
-            if (key === 's' || key === 'arrowdown') movePlayer(1, 0);
-            if (key === 'a' || key === 'arrowleft') movePlayer(0, -1);
-            if (key === 'd' || key === 'arrowright') movePlayer(0, 1);
+            if (key === 'w' || key === 'arrowup') keysHeld.up = true;
+            if (key === 's' || key === 'arrowdown') keysHeld.down = true;
+            if (key === 'a' || key === 'arrowleft') keysHeld.left = true;
+            if (key === 'd' || key === 'arrowright') keysHeld.right = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'arrowup') keysHeld.up = false;
+            if (key === 's' || key === 'arrowdown') keysHeld.down = false;
+            if (key === 'a' || key === 'arrowleft') keysHeld.left = false;
+            if (key === 'd' || key === 'arrowright') keysHeld.right = false;
         });
 
-        // Virtual Joystick Bindings
-        document.getElementById('btnUp').addEventListener('click', () => movePlayer(-1, 0));
-        document.getElementById('btnDown').addEventListener('click', () => movePlayer(1, 0));
-        document.getElementById('btnLeft').addEventListener('click', () => movePlayer(0, -1));
-        document.getElementById('btnRight').addEventListener('click', () => movePlayer(0, 1));
+        // Virtual Joystick Bindings (press and hold)
+        function bindHoldButton(elementId, dirKey) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            const press = (e) => { e.preventDefault(); keysHeld[dirKey] = true; };
+            const release = (e) => { e.preventDefault(); keysHeld[dirKey] = false; };
+            el.addEventListener('pointerdown', press);
+            el.addEventListener('pointerup', release);
+            el.addEventListener('pointerleave', release);
+            el.addEventListener('pointercancel', release);
+        }
+        bindHoldButton('btnUp', 'up');
+        bindHoldButton('btnDown', 'down');
+        bindHoldButton('btnLeft', 'left');
+        bindHoldButton('btnRight', 'right');
 
-        // Screen Touch Swipe Gesture Navigation Alternatives
+        // Screen Touch Drag-to-Move: hold finger in a direction relative to start point
         let touchStartX = 0;
         let touchStartY = 0;
         canvas.addEventListener('touchstart', (e) => {
@@ -4014,20 +4335,23 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             touchStartY = e.touches[0].clientY;
         }, { passive: true });
 
+        canvas.addEventListener('touchmove', (e) => {
+            if (!touchStartX && !touchStartY) return;
+            const diffX = e.touches[0].clientX - touchStartX;
+            const diffY = e.touches[0].clientY - touchStartY;
+            const threshold = 15;
+
+            keysHeld.right = diffX > threshold;
+            keysHeld.left = diffX < -threshold;
+            keysHeld.down = diffY > threshold;
+            keysHeld.up = diffY < -threshold;
+        }, { passive: true });
+
         canvas.addEventListener('touchend', (e) => {
-            if (!touchStartX || !touchStartY) return;
-            const diffX = e.changedTouches[0].clientX - touchStartX;
-            const diffY = e.changedTouches[0].clientY - touchStartY;
-            
-            if (Math.abs(diffX) > 25 || Math.abs(diffY) > 25) {
-                if (Math.abs(diffX) > Math.abs(diffY)) {
-                    if (diffX > 0) movePlayer(0, 1); // Swipe right
-                    else movePlayer(0, -1); // Swipe left
-                } else {
-                    if (diffY > 0) movePlayer(1, 0); // Swipe down
-                    else movePlayer(-1, 0); // Swipe up
-                }
-            }
+            keysHeld.up = false;
+            keysHeld.down = false;
+            keysHeld.left = false;
+            keysHeld.right = false;
             touchStartX = 0;
             touchStartY = 0;
         }, { passive: true });
@@ -4045,10 +4369,12 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
     });
         document.getElementById('restartGameBtn').addEventListener('click', () => {
             if (typeof window.stopIntermissionMusic === 'function') window.stopIntermissionMusic();
+            if (typeof window.stopGameplayMusic === 'function') window.stopGameplayMusic();
         if (typeof restartFullGame === 'function') restartFullGame();
         });
 
         document.getElementById('victoryResetBtn').addEventListener('click', () => {
             if (typeof window.stopIntermissionMusic === 'function') window.stopIntermissionMusic();
+            if (typeof window.stopGameplayMusic === 'function') window.stopGameplayMusic();
         if (typeof restartFullGame === 'function') restartFullGame();
         });
