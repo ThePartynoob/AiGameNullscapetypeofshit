@@ -30,6 +30,32 @@ window.playIntermissionMusic = function(intermissionNum) {
                 { min: 26, max: 30, start: 34,  end: 173 },  // Late Game Part 2
                 { min: 31, max: 35, start: 174, end: 268 } // Late Game Part 3...
             ]
+        },
+        {
+            file: 'Unforeseen-Unforgiving.mp3', // <-- Put your level 21+ song filename here
+            minLvl: 36,
+            maxLvl: 50,
+            parts: [
+                { min: 36, max: 40, start: 0,   end: 171 },   // Late Game Part 1: example timestamps
+                { min: 41, max: 50, start: 172,  end: 349 }
+            ]
+        },
+        {
+            file: 'Choir-of-the-Bells.mp3', // <-- Put your level 21+ song filename here
+            minLvl: 51,
+            maxLvl: 70,
+            parts: [
+                { min: 51, max: 60, start: 0,   end: 200 },   // Late Game Part 1: example timestamps
+                { min: 61, max: 70, start: 201,  end: 333 }
+            ]
+        },
+        {
+            file: 'Event_Horizon.mp3', // <-- Put your level 21+ song filename here
+            minLvl: 71,
+            maxLvl: Infinity,
+            parts: [
+                { min: 71, max: Infinity, start: 0,   end: 343 }
+            ]
         }
     ];
 
