@@ -556,7 +556,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         let currentLevel = 1;
         let playerHealth = 5;
         let maxHealth = 5;
-        let levelsUntilHeal = 6; // Countdown matrix
+        let levelsUntilHeal = 3; // Countdown matrix
         let grid = [];
         let playerPos = { r: 0, c: 0 };
         let winPos = { r: 9, c: 9 };
@@ -1525,7 +1525,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             // Decerement restoration countdown and heal 1 health every 6 levels
             levelsUntilHeal--;
             if (levelsUntilHeal <= 0) {
-                levelsUntilHeal = 6;
+                levelsUntilHeal = 2;
                 if (playerHealth < maxHealth) {
                     playerHealth++;
                     healFlashTime = 300; // Trigger green healing screen tint
