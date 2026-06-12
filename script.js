@@ -554,8 +554,8 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
         // Dynamic State Tracking Variables
         let currentLevel = 1;
-        let playerHealth = 3;
-        let maxHealth = 3;
+        let playerHealth = 5;
+        let maxHealth = 5;
         let levelsUntilHeal = 6; // Countdown matrix
         let grid = [];
         let playerPos = { r: 0, c: 0 };
@@ -1544,7 +1544,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
                 // Build the list of intermission steps that apply this round, in display order
                 const queue = [];
-                if (nextLvl % 11 === 0 && nextLvl > 5 && typeof showUpgradeModal === 'function') {
+                if (nextLvl % 10 === 0 && nextLvl > 5 && nextLvl < 30 && typeof showUpgradeModal === 'function') {
                     queue.push((lvl, next) => showUpgradeModal(lvl, next));
                 }
                 if (isEnemyChoiceLevel(nextLvl)) {
