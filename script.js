@@ -646,10 +646,11 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         // Hostile Choices tracking (no back-to-back draft)
         let lastChosenEnemyId = null;
 
-        // Level Progression Triggers
         let level15ProgressionActive = false;
         let level20ProgressionActive = false;
+        let level30ProgressionActive = false;
 
+        let landminesList = [];
         // Hazards and Selection Inventories
         let selectedEnemies = {
             shooter: 0,
@@ -674,34 +675,37 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             bomb_faster: false,
             bomb_bigger: false,
             greenlight_harder: false,
-            chaser_boost: 0, // Stacks up to 2 times
-            train_both_ways: false, // Normal curse: strikes row and col crossing at index
-            chaser_center_merge: false, // Normal curse: chasers target center before chasing you
-            // Generic Fallback Normal Curses
+            chaser_boost: 0, 
+            train_both_ways: false, 
+            chaser_center_merge: false, 
             system_lag: false,
             ui_static: false,
             drift_sensors: false,
-            // Greater Curses (Every 15 levels)
+            
+            // Map Mines Curses
+            map_bombs_more: false,
+            map_bombs_bigger: false,
+            
             chrono_decay: false,
             apocalypse_barrage: false,
             doomsday_charge: false,
             overload_protocol: false,
-            train_8_directions: false, // Greater curse: train warning & strike in 8 directions
-            greenlight_voidbound: false, // Greater curse: Voidbound Feurougefeuvert
-            screamer_double_dash: false, // Greater curse: double dash back-to-back
-            screamer_faster: 0, // stacks up to 2 (normal curse)
-            // Medal Curse modifiers
-            medal_goldrush: false,
-            medal_barrage: false,
-            medal_frenzy: false,
-            medal_overcharge: false,
-            medal_swift: false,
-            medal_voidtide: false,
-            medal_ironhide: false,
-            medal_chaosweave: false,
-            // Lap 2 persistent curse
+            train_8_directions: false, 
+            greenlight_voidbound: false,
+            screamer_double_dash: false, 
+            screamer_faster: 0, 
+            
+            // Medal Curse modifiers (Updated to integers to allow stacking twice)
+            medal_goldrush: 0,
+            medal_barrage: 0,
+            medal_frenzy: 0,
+            medal_overcharge: 0,
+            medal_swift: 0,
+            medal_voidtide: 0,
+            medal_ironhide: 0,
+            medal_chaosweave: 0,
+            
             lap2: false,
-            // Generic Fallback Greater Curses
             reversed_polarity: false,
             port_shift: false
         };
@@ -1173,13 +1177,13 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
         // Check level progression map triggers
         function isEnemyChoiceLevel(lvl) {
             if (lvl === 1) return true;
-            if (lvl > 2 && lvl % 3 === 0) return true; // 4, 6, 8, 12, 14, 16, 18, 22...
+            if (lvl > 2 && lvl % 4 === 0) return true; // 4, 6, 8, 12, 14, 16, 18, 22...
             return false;
         }
 
         function isCurseChoiceLevel(lvl) {
              const isGreater = (lvl > 25 && lvl % 5 === 0) || lvl % 15 === 0 ;
-            return  lvl % 2 === 0 || isGreater;
+            return  lvl % 3 === 0 || isGreater;
         }
 
         // Modal for Intermission Progression Notifications
@@ -1339,13 +1343,18 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             medalSpawned = false;
             medalConsumed = false;
             if (isCurseChoiceLevel(currentLevel + 1)) {
-                const medalCandidates = shuffledTiles.filter(tile => tile.r !== winPos.r || tile.c !== winPos.c);
-                if (medalCandidates.length > 0) {
-                    const choice = medalCandidates[Math.floor(Math.random() * medalCandidates.length)];
-                    medalPos = { r: choice.r, c: choice.c };
-                    medalSpawned = true;
-                    const index = shuffledTiles.findIndex(tile => tile.r === choice.r && tile.c === choice.c);
-                    if (index !== -1) shuffledTiles.splice(index, 1);
+                // Determine if next level is greater curse. If so, hide the medal!
+                const isGreaterNext = (currentLevel + 1 > 25 && (currentLevel + 1) % 5 === 0) || (currentLevel + 1) % 15 === 0;
+                
+                if (!isGreaterNext) {
+                    const medalCandidates = shuffledTiles.filter(tile => tile.r !== winPos.r || tile.c !== winPos.c);
+                    if (medalCandidates.length > 0) {
+                        const choice = medalCandidates[Math.floor(Math.random() * medalCandidates.length)];
+                        medalPos = { r: choice.r, c: choice.c };
+                        medalSpawned = true;
+                        const index = shuffledTiles.findIndex(tile => tile.r === choice.r && tile.c === choice.c);
+                        if (index !== -1) shuffledTiles.splice(index, 1);
+                    }
                 }
             }
 
@@ -1367,9 +1376,32 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
             // Spawn active enemies
             spawnLevelEntities();
+            
 
             // Spawn altar(s) when level qualifies
             const altarTiles = shuffledTiles.filter(tile => (tile.r !== playerPos.r || tile.c !== playerPos.c) && (tile.r !== winPos.r || tile.c !== winPos.c));
+            bomboclatSpawnTimer = Date.now();
+            greenLightSpawnTimer = Date.now() + Math.random() * 3000;
+            trainSpawnTimer = Date.now() + 1000;
+
+            landminesList = [];
+            if (currentLevel >= 30) {
+                let mineCount = 4 + Math.floor((currentLevel - 30)/5);
+                if (activeCurses.map_bombs_more) mineCount += 4;
+                if (activeCurses.medal_chaosweave) mineCount += 2 * activeCurses.medal_chaosweave;
+                
+                let available = shuffledTiles.filter(t => t.r !== playerPos.r || t.c !== playerPos.c);
+                for (let i = 0; i < mineCount && available.length > 0; i++) {
+                    let idx = Math.floor(Math.random() * available.length);
+                    let tile = available.splice(idx, 1)[0];
+                    landminesList.push({
+                        r: tile.r, 
+                        c: tile.c,
+                        triggered: false,
+                        radius: activeCurses.map_bombs_bigger ? 3 : 2 
+                    });
+                }
+            }
             try { if (typeof spawnAltarForLevel === 'function') spawnAltarForLevel(currentLevel, altarTiles); } catch(e) { /* ignore if upgrades module missing */ }
 
             try { if (typeof updateAltarUI === 'function') updateAltarUI(); } catch(e) {}
@@ -1660,6 +1692,45 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 playerPos.c = newC;
                 onPlayerEnterTile();
             }
+
+            // Magnet logic applies dynamically every frame when distance condition hits
+            if (upgrades.coin_magnet > 0 && currentLevel >= 10) {
+                const magnetRadius = upgrades.coin_magnet * 1.5; 
+                for (let i = coinsList.length - 1; i >= 0; i--) {
+                    let coin = coinsList[i];
+                    let dx = (playerVisualPos.x) - (coin.c + 0.5);
+                    let dy = (playerVisualPos.y) - (coin.r + 0.5);
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (dist < magnetRadius) {
+                        let speed = (3.5 * dt) / 1000;
+                        if (dist < speed || dist < 0.5) {
+                            collectCoin(i);
+                        } else {
+                            coin.c += (dx / dist) * speed;
+                            coin.r += (dy / dist) * speed;
+                        }
+                    }
+                }
+            }
+            // Map Bombs checking
+            landminesList.forEach((m, idx) => {
+                if (!m.triggered && m.r === playerPos.r && m.c === playerPos.c) {
+                    m.triggered = true;
+                    playSynthSound('bomb_warn');
+                    spawnFloatingText(m.r, m.c, "ARMED!", "#f97316");
+                    
+                    // Directly bind it into existing bomboclat render & explosion queue array
+                    bombsList.push({
+                        r: m.r, c: m.c,
+                        spawnTime: Date.now(),
+                        fuseDuration: 1500,
+                        radius: m.radius
+                    });
+                    
+                    landminesList.splice(idx, 1);
+                }
+            });
         }
 
         // Game State Transition Controllers
@@ -1728,7 +1799,7 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 proceedToIntermission();
             }
         }
-
+        
         function canUseExit() {
             if (activeCurses.lap2) {
                 if (lap2TotalCoins <= 0) return true;
@@ -1758,6 +1829,57 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
             coinsList = coinPositions;
             spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#8b5cf6', 30);
             spawnFloatingText(playerPos.r, playerPos.c, "LAP 2: RECOLLECT THE COINS", "#a855f7");
+        }
+        function collectCoin(index) {
+            const coin = coinsList[index];
+            coinsList.splice(index, 1);
+            
+            let baseCollected = 1;
+            
+            let bonusCoins = 0;
+            if (activeCurses.medal_goldrush) bonusCoins += 1 * activeCurses.medal_goldrush;
+            if (activeCurses.medal_swift) bonusCoins += 1 * activeCurses.medal_swift;
+            if (activeCurses.medal_voidtide) bonusCoins += 2 * activeCurses.medal_voidtide;
+            if (activeCurses.medal_ironhide) bonusCoins += 3 * activeCurses.medal_ironhide;
+            if (activeCurses.medal_chaosweave) bonusCoins += 2 * activeCurses.medal_chaosweave;
+            
+            let extraFromLuck = 0;
+            if (upgrades.coin_luck > 0) {
+                let chance = upgrades.coin_luck * 0.01;
+                while (Math.random() < chance) {
+                    extraFromLuck++;
+                }
+            }
+
+            let totalToAward = baseCollected + bonusCoins + extraFromLuck;
+            addCoins(totalToAward);
+
+            if (extraFromLuck > 0) {
+                spawnFloatingText(Math.floor(coin.r), Math.floor(coin.c), `+${totalToAward} 🪙 (LUCK!)`, "#10b981");
+                spawnImpactParticles(coin.c + 0.5, coin.r + 0.5, '#10b981', 25);
+            } else if (bonusCoins > 0) {
+                spawnFloatingText(Math.floor(coin.r), Math.floor(coin.c), `+${totalToAward} 🪙`, "#f59e0b");
+                spawnImpactParticles(coin.c + 0.5, coin.r + 0.5, '#f59e0b', 18);
+            } else {
+                spawnFloatingText(Math.floor(coin.r), Math.floor(coin.c), "+1 🪙", "#fbbf24");
+                spawnImpactParticles(coin.c + 0.5, coin.r + 0.5, '#fbbf24', 15);
+            }
+
+            if (activeCurses.medal_frenzy) {
+                spawnImpactParticles(coin.c + 0.5, coin.r + 0.5, '#f97316', 15);
+            }
+
+            playSynthSound('coin_pickup');
+
+            if (activeCurses.lap2) {
+                lap2CollectedThisPhase++;
+                if (lap2Phase === 1 && lap2CollectedThisPhase >= lap2TotalCoins) {
+                    startLap2SecondPhase();
+                }
+                if (lap2Phase === 2 && lap2CollectedThisPhase >= lap2TotalCoins) {
+                    lap2CollapseActive = false;
+                }
+            }
         }
 
         function updateLap2Collapse() {
@@ -1828,10 +1950,22 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
         function damagePlayer(amt = 1) {
             if (!activeLevelRunning) return;
-            if (activeCurses.medal_ironhide) amt += 1;
+            
+            // Check SHIELD Shop Upgrade override
+            if (upgrades.shield > 0) {
+                upgrades.shield--;
+                updateMoneyUI(); 
+                screenShake = 10;
+                playSynthSound('heal');
+                spawnFloatingText(playerPos.r, playerPos.c, "SHIELD BROKEN", "#3b82f6");
+                spawnImpactParticles(playerPos.c + 0.5, playerPos.r + 0.5, '#3b82f6', 25);
+                return;
+            }
+
+            if (activeCurses.medal_ironhide) amt += (1 * activeCurses.medal_ironhide);
             playerHealth -= amt;
             screenShake = 15;
-            damageFlashTime = 200; // Bright crimson glitch overlay
+            damageFlashTime = 200; 
             playSynthSound('hit');
             updateHealthUI();
 
@@ -2118,85 +2252,41 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
         function showMedalCurseChoiceModal(targetLvl, onComplete) {
             const modal = document.getElementById('choiceModal');
-            const title = document.getElementById('modalTitle');
-            const sub = document.getElementById('modalSub');
             const container = document.getElementById('choiceContainer');
-
-            title.textContent = `LEVEL ${targetLvl}: MEDAL CURSE`;
-            sub.textContent = "Choose one medal-enhanced curse. Each offers extra reward but sharply raises battlefield danger.";
             container.innerHTML = '';
 
             const medalCurses = [
-                {
-                    id: 'medal_goldrush',
-                    name: 'GOLDEN RUSH',
-                    desc: 'Coins are worth more and picked-up coins yield additional credit. Trains and chasers become more aggressive.',
-                    icon: '🪙',
-                    color: 'border-amber-500 hover:bg-amber-950/30 text-amber-300 border-2'
-                },
-                {
-                    id: 'medal_barrage',
-                    name: 'BARRAGE CODE',
-                    desc: 'Shooter fire speeds increase dramatically. Projectiles and trains spawn with greater intensity.',
-                    icon: '🔥',
-                    color: 'border-red-500 hover:bg-red-950/30 text-red-300 border-2'
-                },
-                {
-                    id: 'medal_frenzy',
-                    name: 'FRENZY MATRIX',
-                    desc: 'Chasers sprint faster and alarm systems are accelerated. Coins grant bonus rewards to offset the mayhem.',
-                    icon: '⚡',
-                    color: 'border-fuchsia-500 hover:bg-fuchsia-950/30 text-fuchsia-300 border-2'
-                },
-                {
-                    id: 'medal_overcharge',
-                    name: 'OVERCHARGE CORE',
-                    desc: 'Bomboclat explosions are bigger and detonate faster. Coins yield additional credit.',
-                    icon: '💣',
-                    color: 'border-orange-500 hover:bg-orange-950/30 text-orange-300 border-2'
-                },
-                {
-                    id: 'medal_swift',
-                    name: 'SWIFT PURSUIT',
-                    desc: 'Chasers and Screamers move and dash noticeably faster. Coins grant bonus rewards.',
-                    icon: '🏃',
-                    color: 'border-sky-500 hover:bg-sky-950/30 text-sky-300 border-2'
-                },
-                {
-                    id: 'medal_voidtide',
-                    name: 'VOID TIDE',
-                    desc: 'Red Light/Green Light events trigger more often and give less reaction time. Coins yield large bonus credit.',
-                    icon: '🌊',
-                    color: 'border-teal-500 hover:bg-teal-950/30 text-teal-300 border-2'
-                },
-                {
-                    id: 'medal_ironhide',
-                    name: 'IRONHIDE PROTOCOL',
-                    desc: 'All damage taken is increased by +1. Coins yield substantial bonus credit to compensate.',
-                    icon: '🩸',
-                    color: 'border-rose-500 hover:bg-rose-950/30 text-rose-300 border-2'
-                },
-                {
-                    id: 'medal_chaosweave',
-                    name: 'CHAOS WEAVE',
-                    desc: 'Shooters and trains fire/spawn more frequently and screen static intensifies. Coins yield bonus credit.',
-                    icon: '🌀',
-                    color: 'border-violet-500 hover:bg-violet-950/30 text-violet-300 border-2'
-                }
+                { id: 'medal_goldrush', name: 'GOLDEN RUSH', desc: 'Coins yield huge credit. Trains & chasers become more aggressive.', icon: '🪙', color: 'border-amber-500' },
+                { id: 'medal_barrage', name: 'BARRAGE CODE', desc: 'Shooter fire speeds jump dramatically. Projectiles & trains intensify.', icon: '🔥', color: 'border-red-500' },
+                { id: 'medal_frenzy', name: 'FRENZY MATRIX', desc: 'Chasers sprint faster. Coins grant bonus rewards to offset the mayhem.', icon: '⚡', color: 'border-fuchsia-500' },
+                { id: 'medal_overcharge', name: 'OVERCHARGE CORE', desc: 'Bomboclat explosions are bigger and detonate faster. Bonus coin credit.', icon: '💣', color: 'border-orange-500' },
+                { id: 'medal_swift', name: 'SWIFT PURSUIT', desc: 'Chasers and Screamers move noticeably faster. Bonus coin credit.', icon: '🏃', color: 'border-sky-500' },
+                { id: 'medal_voidtide', name: 'VOID TIDE', desc: 'Red Light/Green Light trigger more often and give less reaction time.', icon: '🌊', color: 'border-teal-500' },
+                { id: 'medal_ironhide', name: 'IRONHIDE PROTOCOL', desc: 'All damage taken is increased by +1. Huge bonus coin credit.', icon: '🩸', color: 'border-rose-500' },
+                { id: 'medal_chaosweave', name: 'CHAOS WEAVE', desc: 'Static screen intensifies heavily, units spawn frequently. Big bonus coin returns.', icon: '🌀', color: 'border-violet-500' }
             ];
 
-            medalCurses.forEach(curse => {
+            // Filter out items already stacked twice
+            const availableMedals = medalCurses.filter(c => (activeCurses[c.id] || 0) < 2);
+
+            if (availableMedals.length === 0) {
+                modal.classList.add('hidden');
+                showCurseChoiceModal(targetLvl, true, onComplete);
+                return;
+            }
+
+            availableMedals.forEach(curse => {
                 const card = document.createElement('button');
-                card.className = `w-full text-left p-3 rounded-lg border bg-slate-900 transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-start gap-3 ${curse.color}`;
+                card.className = `w-full text-left p-3 rounded-lg border bg-slate-900 transition-all flex items-start gap-3 hover:bg-slate-800 ${curse.color}`;
                 card.innerHTML = `
                     <span class="text-2xl mt-1">${curse.icon}</span>
                     <div class="flex-1">
                         <div class="font-bold text-sm pixel-font">${curse.name}</div>
-                        <p class="text-[11px] text-slate-400 mt-1 leading-normal">${curse.desc}</p>
+                        <p class="text-[11px] text-slate-400 mt-1">${curse.desc} (Stack limit: 2)</p>
                     </div>
                 `;
                 card.addEventListener('click', () => {
-                    activeCurses[curse.id] = true;
+                    activeCurses[curse.id] = (activeCurses[curse.id] || 0) + 1;
                     medalCollected = false;
                     medalConsumed = true;
                     modal.classList.add('hidden');
@@ -2415,7 +2505,26 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                         color: 'border-cyan-500/40 hover:bg-cyan-950/20 text-cyan-300'
                     });
                 }
-
+                if (targetLvl >= 30) {
+                    if (!activeCurses.map_bombs_more) {
+                        pool.push({
+                            id: 'map_bombs_more',
+                            name: 'MINEFIELD EXPANSION',
+                            desc: 'Spawns +4 additional proximity landmines across the map layout.',
+                            icon: '💥',
+                            color: 'border-orange-500/40 hover:bg-orange-950/20 text-orange-400'
+                        });
+                    }
+                    if (!activeCurses.map_bombs_bigger) {
+                        pool.push({
+                            id: 'map_bombs_bigger',
+                            name: 'THERMOBARIC MINES',
+                            desc: 'Increases the detonation radius of map landmines to a huge 7x7 layout.',
+                            icon: '🔥',
+                            color: 'border-red-500/40 hover:bg-red-950/20 text-red-400'
+                        });
+                    }
+                }
                 if (selectedEnemies.shooter > 0 || selectedEnemies.voidbound_shooter > 0) {
                     if (!activeCurses.shooter_faster) {
                         pool.push({
@@ -3535,7 +3644,66 @@ const AudioCtx = window.AudioContext || window.webkitAudioContext;
                     }
                 }
             }
+            landminesList.forEach(m => {
+                if (!m.triggered) {
+                    const cx = (m.c + 0.5) * cellSize;
+                    const cy = (m.r + 0.5) * cellSize;
+                    ctx.strokeStyle = '#ea580c';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, cellSize * 0.25, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.fillStyle = '#9a3412';
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, cellSize * 0.1, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
 
+            if (typeof winPos !== 'undefined' && winPos) {
+    // Determine exact pixel coordinates for player and exit
+    const px = playerVisualPos.x * cellSize;
+    const py = playerVisualPos.y * cellSize;
+    const wx = (winPos.c + 0.5) * cellSize;
+    const wy = (winPos.r + 0.5) * cellSize;
+
+    // Calculate distance so the arrow hides if you are already right next to the exit
+    const dx = wx - px;
+    const dy = wy - py;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist > cellSize * 2) { 
+        // Calculate the angle pointing to the win position
+        const angle = Math.atan2(dy, dx);
+        
+        // Radius/distance from the player character to draw the arrow
+        const arrowDistance = cellSize * 0.9; 
+
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(angle);
+
+        // Pulsing opacity effect to make it feel alive
+        ctx.globalAlpha = 0.6 + Math.sin(Date.now() / 150) * 0.4; 
+        
+        // Draw the arrow shape
+        ctx.fillStyle = '#10b981'; // Emerald green color to match typical exit visuals
+        ctx.beginPath();
+        ctx.moveTo(arrowDistance, 0);            // Arrow tip
+        ctx.lineTo(arrowDistance - 12, -8);      // Top back corner
+        ctx.lineTo(arrowDistance - 8, 0);        // Inner indent (makes it a chevron shape)
+        ctx.lineTo(arrowDistance - 12, 8);       // Bottom back corner
+        ctx.closePath();
+        ctx.fill();
+        
+        // Add a slight glow
+        ctx.shadowColor = '#059669';
+        ctx.shadowBlur = 10;
+        ctx.fill();
+        
+        ctx.restore();
+    }
+}
             // 5. Draw Gold Coins scattered on the grid (Level 10+)
             if (currentLevel >= 10) {
                 coinsList.forEach(coin => {

@@ -6,9 +6,10 @@ let upgrades = {
     coin_radar: 0,      // max 1
     coin_magnet: 0,     // max 5
     more_speed: 0,      // max 3
-    extra_hp: 0,        // max 5 (NEW)
-    curse_choices: 0,   // max 2 (NEW)
-    greater_choices: 0  // max 1 (NEW)
+    extra_hp: 0,        // max 5
+    curse_choices: 0,   // max 2 
+    greater_choices: 0, // max 1 
+    coin_luck: 0        // max 15 (NEW recursive coin luck)
 };
 let activeAltar = null;
 
@@ -44,14 +45,14 @@ function awardCoinsForWin(lvl) {
     }
 
     try {
-        if (activeCurses.medal_goldrush) baseReward += 2;
-        if (activeCurses.medal_barrage) baseReward += 1;
-        if (activeCurses.medal_frenzy) baseReward += 1;
+        if (activeCurses.medal_goldrush) baseReward += 2 * activeCurses.medal_goldrush;
+        if (activeCurses.medal_barrage) baseReward += 1 * activeCurses.medal_barrage;
+        if (activeCurses.medal_frenzy) baseReward += 1 * activeCurses.medal_frenzy;
     } catch (e) {}
 
     addCoins(baseReward);
-    if (typeof spawnFloatingText === 'function') {
-        spawnFloatingText(400, 400, `+${baseReward} 🪙`, '#f59e0b');
+    if (typeof spawnFloatingText === 'function' && typeof playerPos !== 'undefined') {
+        spawnFloatingText(playerPos.r, playerPos.c, `+${baseReward} 🪙`, '#f59e0b');
     }
 }
 
@@ -74,11 +75,10 @@ function showUpgradeModal(targetLvl, next) {
         const costCoinRadar = 12;
         const costCoinMagnet = 10 + (upgrades.coin_magnet || 0) * 6;
         const costMoreSpeed = 15 + (upgrades.more_speed || 0) * 10;
-        
-        // New requested scaling upgrades
-        const costExtraHp = 75 * Math.pow(2, (upgrades.extra_hp || 0)); // 75 -> 150 -> 300 -> 600 -> 1200
+        const costExtraHp = 75 * Math.pow(2, (upgrades.extra_hp || 0)); 
         const costCurseChoices = 100;
         const costGreaterChoices = 150;
+        const costCoinLuck = Math.floor(200 * Math.pow(1.5, (upgrades.coin_luck || 0)));
 
         const choices = [];
         
@@ -92,7 +92,7 @@ function showUpgradeModal(targetLvl, next) {
             choices.push({id: 'coin_radar', name: 'COIN RADAR', desc: 'Reveal hidden coin indicators on the HUD compass.', cost: costCoinRadar});
         }
         if ((upgrades.coin_magnet || 0) < 5) {
-            choices.push({id: 'coin_magnet', name: 'COIN MAGNET', desc: `Increase vacuum pickup reach. (${upgrades.coin_magnet}/5)`, cost: costCoinMagnet});
+            choices.push({id: 'coin_magnet', name: 'COIN MAGNET', desc: `Pull nearby coins towards you magnetically. (${upgrades.coin_magnet}/5)`, cost: costCoinMagnet});
         }
         if ((upgrades.more_speed || 0) < 3) {
             choices.push({id: 'more_speed', name: 'OVERCLOCK SPEED', desc: `Permanently increase movement speed. (${upgrades.more_speed}/3)`, cost: costMoreSpeed});
@@ -101,10 +101,13 @@ function showUpgradeModal(targetLvl, next) {
             choices.push({id: 'extra_hp', name: 'VITALITY CORE', desc: `Gain +1 Max HP capacity container. (${upgrades.extra_hp}/5)`, cost: costExtraHp});
         }
         if ((upgrades.curse_choices || 0) < 2) {
-            choices.push({id: 'curse_choices', name: 'CURSE EXPANSION', desc: `Offers 1 additional choice card slot. (${upgrades.curse_choices}/2)`, cost: costCurseChoices});
+            choices.push({id: 'curse_choices', name: 'CURSE EXPANSION', desc: `Offers +1 standard curse choice card slot. (${upgrades.curse_choices}/2)`, cost: costCurseChoices});
         }
         if ((upgrades.greater_choices || 0) < 1) {
-            choices.push({id: 'greater_choices', name: 'GREATER VISION', desc: `Offers 1 extra GREATER curse selection slot. (${upgrades.greater_choices}/1)`, cost: costGreaterChoices});
+            choices.push({id: 'greater_choices', name: 'GREATER VISION', desc: `Offers +1 GREATER curse choice card slot. (${upgrades.greater_choices}/1)`, cost: costGreaterChoices});
+        }
+        if ((upgrades.coin_luck || 0) < 15) {
+            choices.push({id: 'coin_luck', name: 'LUCKY CASCADE', desc: `+1% base chance per tier to recursively trigger extra coin gains. (${upgrades.coin_luck}/15)`, cost: costCoinLuck});
         }
 
         choices.forEach(ch => {
@@ -130,9 +133,10 @@ function showUpgradeModal(targetLvl, next) {
                 playerMoney -= ch.cost;
                 upgrades[ch.id] = (upgrades[ch.id] || 0) + 1;
                 
-                if (ch.id === 'extra_hp' && typeof playerMaxHp !== 'undefined') {
-                    playerMaxHp = 3 + upgrades.extra_hp;
-                    if (typeof playerHp !== 'undefined') playerHp = Math.min(playerMaxHp, playerHp + 1);
+                if (ch.id === 'extra_hp' && typeof maxHealth !== 'undefined') {
+                    maxHealth = 5 + upgrades.extra_hp;
+                    if (typeof playerHealth !== 'undefined') playerHealth = Math.min(maxHealth, playerHealth + 1);
+                    if (typeof updateHealthUI === 'function') updateHealthUI();
                 }
                 
                 updateMoneyUI();
@@ -141,19 +145,17 @@ function showUpgradeModal(targetLvl, next) {
             container.appendChild(btn);
         });
 
-        // Continue button allowing players to leave shop voluntarily
         const continueBtn = document.createElement('button');
         continueBtn.className = 'w-full text-center p-3 mt-4 rounded-lg border border-emerald-500 bg-emerald-950/40 text-emerald-300 font-bold tracking-wider hover:bg-emerald-900/60 transition-all cursor-pointer';
         continueBtn.textContent = 'CONTINUE TO NEXT LEVEL ➔';
         continueBtn.addEventListener('click', () => {
             if (modal) modal.classList.add('hidden');
             
-            // Check if purification altar was touched during the level
             if (activeAltar && activeAltar.type === 'purification' && activeAltar.interacted) {
-                activeAltar = null; // Consume Altar state
+                activeAltar = null;
                 showPurificationModal(targetLvl, next);
             } else {
-                activeAltar = null; // Clear standard altar state
+                activeAltar = null;
                 if (typeof next === 'function') next();
                 else if (typeof initNewLevel === 'function') initNewLevel(targetLvl);
             }
@@ -165,7 +167,6 @@ function showUpgradeModal(targetLvl, next) {
     if (modal) modal.classList.remove('hidden');
 }
 
-// Special Modal for Purifying Curses (Accepts Debt + Spawns extra Limit-Bypassing enemy)
 function showPurificationModal(targetLvl, next) {
     const modal = document.getElementById('choiceModal');
     const title = document.getElementById('modalTitle');
@@ -182,9 +183,9 @@ function showPurificationModal(targetLvl, next) {
         if (typeof activeCurses !== 'undefined') {
             for (let key in activeCurses) {
                 if (activeCurses[key]) {
-                    let cost = 30; // base value cost
+                    let cost = 30; 
                     if (key.includes('medal')) cost = 60;
-                    if (key.includes('greater') || key.includes('lap2')) cost = 85; // lap 2 has the most value
+                    if (key.includes('greater') || key.includes('lap2')) cost = 85; 
                     if (key === 'curse_greed_toll') cost = 45;
 
                     activeCurseKeys.push({ id: key, name: key.replace(/_/g, ' ').toUpperCase(), cost: cost });
@@ -211,12 +212,15 @@ function showPurificationModal(targetLvl, next) {
                 `;
 
                 btn.addEventListener('click', () => {
-                    // Process removal (allows going into debt)
                     playerMoney -= curse.cost;
-                    activeCurses[curse.id] = false;
+                    
+                    if (typeof activeCurses[curse.id] === 'number') {
+                        activeCurses[curse.id] = 0;
+                    } else {
+                        activeCurses[curse.id] = false;
+                    }
                     updateMoneyUI();
 
-                    // Inject an enemy into the live array that bypasses limits
                     if (typeof forceSpawnPersistentBypassEnemy === 'function') {
                         forceSpawnPersistentBypassEnemy();
                     }
@@ -229,7 +233,6 @@ function showPurificationModal(targetLvl, next) {
             });
         }
 
-        // Decline Button
         const skipBtn = document.createElement('button');
         skipBtn.className = 'w-full text-center p-2 mt-2 rounded-lg border border-slate-700 text-slate-400 text-xs hover:bg-slate-800 transition-all cursor-pointer';
         skipBtn.textContent = 'Decline Purification (Keep Curses)';
@@ -244,19 +247,21 @@ function showPurificationModal(targetLvl, next) {
     if (modal) modal.classList.remove('hidden');
 }
 
-function spawnAltarForLevel(lvl) {
-    // Spawns starting at level 20, exactly every 2 levels, once per level.
+function spawnAltarForLevel(lvl, altarTiles) {
     if (lvl < 20 || lvl % 2 !== 0) { 
         activeAltar = null; 
         updateAltarUI(); 
         return; 
     }
+    
+    // Altar coordinate fix: Map them explicitly onto verified grid tile structures
+    if (!altarTiles || altarTiles.length === 0) return;
+    const tile = altarTiles[Math.floor(Math.random() * altarTiles.length)];
 
     activeAltar = {
         type: Math.random() < 0.5 ? 'purification' : 'purgatory',
         level: lvl,
-        x: Math.random() * 500 + 150, // Physical canvas location coordinates
-        y: Math.random() * 500 + 150,
+        pos: { r: tile.r, c: tile.c },
         interacted: false
     };
     updateAltarUI();
@@ -292,6 +297,5 @@ function updateEnemyList() {
     el.innerHTML = `<span style="color: #e2e8f0">Standard: ${standardCount}</span> | <span style="color: #22d3ee; opacity: 0.8">Ghost/Temp: ${tempCount}</span>`;
 }
 
-// Periodic UI tick to keep displays fresh
 setInterval(() => { try { updateAltarUI(); updateMoneyUI(); updateEnemyList(); } catch(e){} }, 800);
 window.addEventListener('load', () => { updateMoneyUI(); updateAltarUI(); updateEnemyList(); });
